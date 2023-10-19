@@ -7,3 +7,5 @@ The files provided here are:
 * `derekogram_python.ipynb`: Python notebook source file
 * `derekogram_R.Rmd`: R Markdown source file
 * `derekogram_stata.txt`: Stata code with markdown source file
+
+In case of questions, you can contact Sascha Wolfer via wolfer@ids-mannheim.de.
