@@ -1,0 +1,592 @@
+---
+title: "Introducing DeReKoGram: R code"
+author: "[Sascha Wolfer](https://perso.ids-mannheim.de/seiten/wolfer.html)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: sandstone
+    highlight: tango
+    toc: yes
+    toc_float: yes
+    toc_depth: 2
+    code_folding: show
+    self_contained: true
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+bibliography: derekogram_refs.bib
+csl: glossa.csl
+link-citations: yes
+nocite: |
+  @data.table2022
+  @scales2022
+  @readr2022
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache.lazy = F)
+knitr::opts_knit$set(root.dir = '/Users/sascha/Documents/Daten/DeReKoGram_Data/Original_Datasets')
+```
+
+## What is this document?
+
+This RMarkdown document accompanies a paper [-@wolfer2023sub] that introduces an $n$-gram frequency dataset for German. With this document, we want to demonstrate some basic use cases for the 1- to 3-gram frequency lists provided in the [repository of the Leibniz Institute for the German Language](http://repos.ids-mannheim.de/corpora/DeReKoGram2023/cmdi/object000000.cmdi) (IDS) and make it easier for other researchers to work with the data. Here, we are providing R code to work with the frequency lists.
+
+### How to use?
+
+* First, you need to download the dataset(s) you want to work with from our [OWIDplus](https://www.owid.de/plus/) site or directly from the [IDS repository](http://repos.ids-mannheim.de/corpora/DeReKoGram2023/cmdi/object000000.cmdi). The naming convention of the datasets is as follows: `[1/2/3]-gram-token-lemma-pos-freqs-[with/without]-punctuation.<fold number with leading zero>.tsv`.
+* Then unzip the dataset(s) with `unxz` on Linux or macOS. On Windows, you can use [7-Zip](https://www.7-zip.org/download.html) to decompress `xz` files. If you don't want to decompress the files, you can also work with the reader functions from the [{readr}](https://readr.tidyverse.org) package which support reading from `xz` files directly.
+
+We will demonstrate most of the operations documented here with only a _subset_ of the 16 folds contained in the original data. Please refer to the accompanying [publication](#ref-wolfer2023sub) (Section 'Evaluation of fold distribution') to see why, in many cases, it should not make a huge difference whether you use a subset of folds or all folds.
+
+Some sections in this document have a "tl;dr" _(too long; didn't read)_ section at the end where you can only access the sample code without much explaining or testing.
+
+All sections that are visible in the menu bar on the left are 'self-contained' in the sense that no code in these sections relies on code in previous sections (e.g. loading of data or packages). 
+
+## Start/end markers
+
+You might want to remove all rows in the dataset that consist of start or end markers only. You can do this by excluding rows that _only_ contain the integer codes `-1` or `-2` in the wordform and lemma column(s). Suppose, you have bigram frequencies of fold 12 loaded in the object `bg12` and assigned column names `form1` and `form2` to the wordform column of the first and second element of the bigram respectively. You can then subset the fold like this:
+
+```{r remove-startend, eval=F}
+bg12_nomarkers <- bg12[!(bg12$form1 %in% c(-1, -2) & bg12$form2 %in% c(-1, -2)),]
+```
+
+We've included these "markers-only rows" for consistency checks, for example to check whether the frequencies (in the bigram case) for `«START»` `«START»` and `«START»` `<other>` match. In the unigram datasets, the number of markers can also be used to find out the number of documents that went into a corpus fold because each `«START»` marks the beginning of a document and each `«END»` the end of a document For simple frequency tables, the "markers-only rows" are not necessary and might even distort some measures like normed/relative frequencies.
+
+However, there are situations where keeping such rows can be important. For example, when we train language models (see the provided _Python_ code for an example): if we want to compute  $P_{ml} =\frac{c(v,w)}{c(v)}$ based on the 2-gram data, we can use the 1-gram data to get the information for the denominator $c(v)$. If we exclude the markers-only rows from the 1-gram data, this would lead to a denominator of 0 for $v$ equal to `«START»` and thus an undefined value.
+
+## 'Decrypting' integer codes {#decrypt}
+
+Wordforms and lemmas in DeReKoGram are integer-coded [@brants2007]. The information for back-translating or 'decrypting' the integer codes is saved in the `[lemma/token]_keys.<fold number with leading zero>.tsv.xz` dictionary files. The files without fold number are the overall dictionaries for the complete dataset. Integer codes are consistent over the single-fold dictionaries and the overall dictionary.
+
+If you want to translate integer codes into original lemmas or wordforms, you can simply merge one column of the dictionary into the frequency dataset. The `by` columns for `merge()` are the columns holding the integer codes. We will demonstrate this using fold 1 and both its lemma and token (= wordform) dictionary. After loading the required packages, we load the dataset. We recommend that you use the specified set of parameters to `fread()` to prevent problems.
+
+As we wrote in the article, the columns in the unigram datasets are sorted as follows ($\rightarrow$ symbolizes a tab symbol (`\t`):
+
+1: `Wordform code` $\rightarrow$ 2: `Lemma code` $\rightarrow$ 3: `POS tag` $\rightarrow$ 4: `Frequency`
+
+The first three columns are repeated for bigrams. In this case, the first three columns are repeated for the second element of the bigram, like so:
+
+1: `Wordform code 1` $\rightarrow$ 2: `Lemma code 1` $\rightarrow$ 3: `POS tag 1` $\rightarrow$ 4: `Wordform code 2` $\rightarrow$ 5: `Lemma code 2` $\rightarrow$ 6: `POS tag 2` $\rightarrow$ 7: `Frequency`
+
+For trigrams, this works accordingly. Consequently, trigram datasets have 3 * 3 + 1 = 10 columns.
+
+```{r decrypt, cache = T}
+library(data.table)
+# Loading fold 1 (with punctuation)
+f1 <- fread("1-gram-token-lemma-pos-freqs-with-punctuation.01.tsv",
+           sep = "\t", header = F,
+           quote = "", na.strings = "",
+           colClasses = c("numeric", "numeric", "character", "numeric"))
+setnames(f1, c("form", "lemma", "pos", "freq"))
+
+# Loading lemma keys for fold 1
+lemma_dict1 <- fread("lemma_keys.01.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(lemma_dict1, c("lemma_clear", "lemma_code"))
+
+# Loading token keys for fold 1
+token_dict1 <- fread("token_keys.01.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(token_dict1, c("token_clear", "token_code"))
+
+# Merge by lemma codes
+f1 <- merge(f1, lemma_dict1, by.x = "lemma", by.y = "lemma_code")
+# Merge by wordform codes
+f1 <- merge(f1, token_dict1, by.x = "form", by.y = "token_code")
+# Sorting by frequency
+setorder(f1, -freq)
+head(f1, 10)
+```
+
+Let us check a few word forms where the lemma should differ from its associated wordform:
+
+```{r token-to-lemma-search}
+f1[f1$token_clear %in% c("ging", "sagte", "Linguistinnen", "beste"),]
+```
+Of course, we can do this the other way around and search for all wordforms associated with a specific lemma.
+
+```{r lemma-to-token-search}
+f1[f1$lemma_clear == "vormachen",]
+```
+
+As you can see, this worked. But please keep in mind that we relied on the TreeTagger [@schmid1994] for the association of lemmas to wordforms and did not employ any corrections there.
+
+You will notice that this process takes a while. Timings might depend on the number of available CPU cores and whether `{data.table}` is able to leverage parallel processing. On a MacBook Pro 14 2021 with 16 GB of RAM and an M1 Pro CPU, merging lemmas and wordforms takes around 7 seconds for one fold. 
+
+## Aggregating datasets {#aggregating}
+
+```{r delete-unused, include = FALSE}
+rm(list=ls())
+invisible(gc())
+```
+
+For DeReKoGram, (at least) two types of aggregations might become relevant:
+
+1. Aggregating wordform frequencies by lemma and/or POS column. This yields, for example, a dataset with POS token frequencies (one frequency value per POS tag).
+2. Aggregating a dataset that is a combination of multiple folds (for example when compiling frequency information from four folds into one).
+
+We will go into detail below.
+
+### Aggregation by lemma and/or part-of-speech
+
+We are demonstrating this aggregation with the unigram dataset (fold 8).
+
+```{r agg-load}
+library(data.table)
+library(scales)
+f <- fread("1-gram-token-lemma-pos-freqs-with-punctuation.08.tsv",
+           sep = "\t", header = F,
+           quote = "", na.strings = "",
+           colClasses = c("numeric", "numeric", "character", "numeric"))
+setnames(f, c("form", "lemma", "pos", "freq"))
+head(f)
+```
+
+How many wordforms (rows), lemmas (number of unique values in column `lemma`) and tokens (summed column `freq`) are there in fold 8? We are using the `comma()` function from `{scales}` only for improved readability of large numbers.
+
+```{r agg-overview}
+comma(nrow(f))
+comma(length(unique(f$lemma)))
+comma(sum(f$freq))
+```
+
+We are now aggregating by lemma and sorting by frequency.
+
+```{r agg-lemma-aggregation, cache = T}
+lem_agg <- f[, list(freq = sum(freq)), by = lemma]
+setorder(lem_agg, -freq)
+head(lem_agg)
+comma(nrow(lem_agg)) # The same as length(unique(f$lemma))
+```
+
+If you want to aggregate by lemma _and_ part-of-speech, just add this in the `by`-part of the first call.
+
+```{r agg-lemmapos-aggregation, cache = T}
+lempos_agg <- f[, list(freq = sum(freq)), by = list(lemma, pos)]
+setorder(lempos_agg, -freq)
+head(lempos_agg)
+```
+
+If you want to 'decrypt' the integer codes, load the corresponding lemma dictionary and merge it with this (or any other) dataset. Here, we are using the lemma dictionary for fold 8 only because this is much faster than using the overall lemma dictionary. Note: Lemma code 3 translates to `--` which is the code for lemmas not recognized by the TreeTagger [@schmid1994]. Hence, in the example below, approx. 54.6 lemmas of wordforms tagged as nouns (POS tag `NN`) in fold 8 have not been recognized. 
+
+```{r agg-decrypt, cache = T}
+lemma_dict <- fread("lemma_keys.08.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(lemma_dict, c("lemma_clear", "lemma_code"))
+lempos_agg <- merge(lempos_agg, lemma_dict,
+                    by.x = "lemma", by.y = "lemma_code",
+                    all.x = T, all.y = F)
+setorder(lempos_agg, -freq)
+head(lempos_agg)
+```
+
+### Combining and aggregating multiple folds
+
+We are now loading three more folds (3, 11 and 15) which we then combine with fold 8. When rbinding folds, some rows are going to be repeated. So, we have to aggregate the folds to get one row per wordform-lemma-POS combination. Let's start by reading and rbinding the four folds.
+
+```{r agg-load-bind, cache = T}
+folds_to_read <- c("1-gram-token-lemma-pos-freqs-with-punctuation.03.tsv",
+                   "1-gram-token-lemma-pos-freqs-with-punctuation.11.tsv",
+                   "1-gram-token-lemma-pos-freqs-with-punctuation.15.tsv")
+folds <- lapply(folds_to_read,
+                FUN = function (filename) {
+                  f <- fread(filename,
+                             sep = "\t", header = F,
+                             quote = "", na.strings = "")
+                  setnames(f, c("form", "lemma", "pos", "freq"))
+                  f
+                })
+# Insert fold 8 as fourth element into the list with read folds
+folds[[4]] <- f
+# rbind all folds 
+folds <- rbindlist(folds)
+```
+
+Let's see how many rows there are for periods (end-of-sentence).
+
+```{r agg-period}
+folds[folds$form == 0 &
+        folds$lemma == 1 &
+        folds$pos == "$.",]
+```
+
+As expected, there are 4 rows in the rbinded dataset, one for each fold. So, we are going to aggregate the rbinded dataset. This yields a "superfold" consisting of folds 3, 8, 11, and 15. This is one quarter of the complete dataset.
+
+```{r agg-bind-agg, cache = T}
+folds <- folds[, list(freq = sum(freq)), by = list(form, lemma, pos)]
+setorder(folds, -freq)
+head(folds)
+```
+
+### tl;dr: Aggregation
+
+#### Aggregating frequency by lemma and part-of-speech {#load-f8}
+
+```{r tldr-agg, cache = T}
+library(data.table)
+f <- fread("1-gram-token-lemma-pos-freqs-with-punctuation.08.tsv",
+           sep = "\t", header = F,
+           quote = "", na.strings = "",
+           colClasses = c("numeric", "numeric", "character", "numeric"))
+setnames(f, c("form", "lemma", "pos", "freq"))
+lempos_agg <- f[, list(freq = sum(freq)), by = list(lemma, pos)] # <-- Aggregation
+setorder(lempos_agg, -freq)
+head(lempos_agg)
+```
+
+#### Aggregating several folds to yield a superfold
+
+```{r tldr-agg-superf, cache = T}
+f1 <- fread("1-gram-token-lemma-pos-freqs-with-punctuation.01.tsv",
+            sep = "\t", header = F,
+            quote = "", na.strings = "")
+f2 <- fread("1-gram-token-lemma-pos-freqs-with-punctuation.02.tsv",
+            sep = "\t", header = F,
+            quote = "", na.strings = "")
+sf <- rbind(f1, f2)
+setnames(sf, c("form", "lemma", "pos", "freq"))
+sf <- sf[, list(freq = sum(freq)), by = list(form, lemma, pos)] # <-- Aggregation
+setorder(sf, -freq)
+head(sf)
+```
+
+
+#### 'Decrypting' integer codes {#load-dict}
+
+```{r tldr-decrypt, cache = T}
+lemma_dict <- fread("lemma_keys.08.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(lemma_dict, c("lemma_clear", "lemma_code"))
+lempos_agg <- merge(lempos_agg, lemma_dict, # <-- Merging lemmas
+                    by.x = "lemma", by.y = "lemma_code",
+                    all.x = T, all.y = F)
+setorder(lempos_agg, -freq)
+head(lempos_agg)
+```
+
+## Lowering datasets
+
+```{r delete-unused2, include = FALSE}
+rm(list=ls())
+invisible(gc())
+```
+
+By "lowering" we mean transforming all wordforms to lower-case (e.g. _Der_ and _dEr_ are transformed to _der_). When working with DeReKoGram, we suggest a _3-step process_ for lowering:
+
+1. Create a dictionary with codes for the lowered forms and lemmas ("lowered codes")
+2. Merge the "lowered codes" to the dataset
+3. Aggregate by the "lowered codes"
+
+Alternatively, you could first decrypt/translate the whole fold, then lower and aggregate it. 
+
+We will demonstrate this using fold 8. We have to load the lemma and token dictionaries for fold 8. Token (or wordform) dictionaries are much larger than lemma dictionaries, especially because all unknown lemmas (integer code 3, clear form `--`) are expanded to their original wordforms.
+
+```{r load-token-dict, cache = T}
+library(data.table)
+# Loading fold 8
+f <- fread("1-gram-token-lemma-pos-freqs-with-punctuation.08.tsv",
+           sep = "\t", header = F,
+           quote = "", na.strings = "",
+           colClasses = c("numeric", "numeric", "character", "numeric"))
+setnames(f, c("form", "lemma", "pos", "freq"))
+
+# Loading lemma dictionary for fold 8
+lemma_dict <- fread("lemma_keys.08.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(lemma_dict, c("lemma_clear", "lemma_code"))
+
+# Loading token dictionary for fold 8
+token_dict <- fread("token_keys.08.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(token_dict, c("token_clear", "token_code"))
+```
+
+### Step 1: Create lowered codes
+
+We first create a new column `low_[lemma/token]_clear` in the dictionaries which hold the lower-case version of all lemmas/wordforms. We then assign the columns `low_[lemma/token]_code` which hold the code with the lowest integer number for each group of lowered lemmas/wordforms. This takes a while.
+
+```{r lower-dicts, cache = T}
+lemma_dict$low_lemma_clear <- tolower(lemma_dict$lemma_clear)
+lemma_dict[, low_lemma_code := min(lemma_code), by = low_lemma_clear]
+token_dict$low_token_clear <- tolower(token_dict$token_clear)
+token_dict[, low_token_code := min(token_code), by = low_token_clear]
+```
+
+We can check if that worked by looking at a few lowered lemmas that have more than one "case-sensitive version".
+
+```{r lower-check}
+lemma_dict[lemma_dict$low_lemma_clear %in% c("rennen", "befinden", "nato"),]
+```
+As you can see, each lowered code (`low_lemma_code`) is set to the smallest `lemma_code` value in this group. Since integer codes are sorted by overall frequency, this already tells us that, for example, _Rennen_ (noun, Engl. "run", "race") is more frequent than _rennen_ (verb, Engl. "to run", "to race").
+
+We can do the same for wordforms, for example to see all the different capitalization versions of _rennen_ and _befinden_.
+
+```{r lower-check2}
+token_dict[token_dict$low_token_clear %in% c("rennen", "befinden"),]
+```
+
+### Step 2: Merge lowered codes to dataset
+
+We are now merging fold 8 and the lowered dictionaries because we want each original lemma/wordform code to be associated with its respective lowered code.
+
+```{r lower-merge, cache = T}
+f <- merge(f, lemma_dict[,c("lemma_code", "low_lemma_code")],
+           by.x = "lemma", by.y = "lemma_code")
+f <- merge(f, token_dict[,c("token_code", "low_token_code")],
+           by.x = "form", by.y = "token_code")
+```
+
+### Step 3: Aggregate by lowered codes
+
+There are multiple rows in the dataset for each value in `low_code` now. Let's see how this looks like for all lowered occurrences of _befinden_ (Engl. as reflexive verb: "to be located" (as verb); as noun: "condition", "opinion"). We find the respective lowered code in the subsetted data.table above, it is `2273`.
+
+```{r befinden}
+f[f$low_token_code == 2273,]
+```
+There are 9 rows for the lowered wordform _befinden_, all with different case-sensitive wordforms, lemmas, or parts-of-speech. To get a lowered dataset that still holds lemma and POS information, we can aggregate by the columns `low_token_code`, `low_lemma_code`, and `pos`.
+
+```{r lower-agg, cache = T}
+f_low <- f[, list(freq = sum(freq)), by = list(low_token_code, low_lemma_code, pos)]
+comma(nrow(f) - nrow(f_low))
+sum(f$freq) == sum(f_low$freq)
+f_low[f_low$low_token_code == 2273,]
+```
+The aggregated lowered dataset has approx. 850,000 rows less and, of course, the same total token frequency as the original dataset.  There are now only 3 rows for the `low_token_code` for _befinden_. All have the same `low_lemma_code`, but there are 3 different parts of speech (finite verb, infinitive verb and noun). Of course, you could still [aggregate](#aggregating) this dataset by `low_token_code` or `low_lemma_code` to aggregate over parts-of-speech.
+
+### tl;dr: Lowering datasets
+
+#### Step 1: Lower dictionaries
+
+```{r lower-dicts-tldr, eval = F}
+lemma_dict$low_lemma_clear <- tolower(lemma_dict$lemma_clear)
+lemma_dict[, low_lemma_code := min(lemma_code), by = low_lemma_clear]
+token_dict$low_token_clear <- tolower(token_dict$token_clear)
+token_dict[, low_token_code := min(token_code), by = low_token_clear]
+```
+
+#### Step 2: Merge lowered code to dataset
+
+```{r lower-merge-tldr, eval = F}
+f <- merge(f, lemma_dict[,c("lemma_code", "low_lemma_code")],
+           by.x = "lemma", by.y = "lemma_code")
+f <- merge(f, token_dict[,c("token_code", "low_token_code")],
+           by.x = "form", by.y = "token_code")
+```
+
+#### Step 3: Aggregate by lowered codes
+
+```{r lower-agg-tldr, eval = F}
+f_low <- f[, list(freq = sum(freq)), by = list(low_token_code, low_lemma_code, pos)]
+```
+
+## Searching for patterns {#searching}
+
+```{r delete-unused4, include = FALSE}
+rm(list=ls())
+invisible(gc())
+```
+
+Sometimes, we want to select all hits for a specific pattern from a frequency dataset like DeReKoGram. The frequency data is integer-coded, though. So, we need to perform two steps to extract the frequency data for specific patterns:
+
+1. Search for the pattern in the respective dictionary. Use the appropriate dictionary (lemma or token/wordform) dependent on whether you want to search for lemmas or wordforms. Save the codes in a variable.
+2. Extract all these codes from the frequency dataset (+ 'decrypt' the integer codes).
+
+DeReKoGram has already been used in such a way by @wolfer2022 who extracted all privative adjectives from DeReKoGram that ended in _-los_ (Engl. "-less"). Here, we are demonstrating this using the unigram data of fold 8. We are searching on the lemma level. If you want to search in the complete dataset, you can either iterate over all the folds (might take longer but needs less memory) or first [aggregate](#aggregating) all the folds into one and use the overall lemma or token dictionaries we are also providing for searching (this second option might be faster but needs significantly more memory).
+
+### Step 1: Extract codes from dictionary
+
+Let's say we are looking for all nouns ending in _-ung_, a common nominalization suffix in German (e.g. _Heizung_, Engl. "radiator"). First, we are extracting all lemma codes from the dictionary with at least three letters before the _ung_ with the first one being an upper-case letter.
+
+```{r ung-find, cache = T}
+library(data.table)
+
+# Loading fold 8
+f <- fread("1-gram-token-lemma-pos-freqs-with-punctuation.08.tsv",
+           sep = "\t", header = F,
+           quote = "", na.strings = "",
+           colClasses = c("numeric", "numeric", "character", "numeric"))
+setnames(f, c("form", "lemma", "pos", "freq"))
+
+# Loading lemma dictionary for fold 8
+lemma_dict <- fread("lemma_keys.08.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(lemma_dict, c("lemma_clear", "lemma_code"))
+
+ung_lemmas <- lemma_dict[grepl("[[:upper:]]{1}[[:lower:]]{2,}ung$", lemma_dict$lemma_clear),]
+ung_lemmas$lemma_clear[1:20]
+```
+
+We are now saving the lemma codes to subset the frequency data with it.
+
+```{r ung-save}
+ung_codes <- ung_lemmas$lemma_code
+```
+
+### Step 2: Extract results from frequency data
+
+Since we already restricted our results to lemmas with an initial upper-case letter, we might not need to restrict our results to nouns. But there's no harm in doing so. So let's extract all nouns that have a lemma code contained in the our dictionary result list. We then aggregate the dataset by lemma because, here, we are not interested in specific inflected forms of the lemma. We also [decrypt](#decrypt) our results by merging it with the lemma dictionary.
+
+```{r ung-results, cache = T}
+ung_freqs <- f[f$lemma %in% ung_codes & f$pos == "NN",]
+ung_freqs_agg <- ung_freqs[, list(freq = sum(freq)), by = lemma]
+ung_freqs_agg <- merge(ung_freqs_agg,
+                       lemma_dict[, c("lemma_clear", "lemma_code")],
+                       by.x = "lemma", by.y = "lemma_code")
+setorder(ung_freqs_agg, -freq)
+head(ung_freqs_agg)
+```
+
+## Cleaning
+
+```{r delete-unused3, include = FALSE}
+rm(list=ls())
+invisible(gc())
+```
+
+In @wolfer2023sub, we show how different cleaning 'stages' of the dataset influence vocabulary growth when taking more and more corpus folds into consideration. Here, we want to demonstrate how this cleaning can be achieved. The cleaning stages reported in the paper are as follows:
+
+(A) No cleaning.
+(B) No punctuation, names, start-end-symbols, URLs, wordforms only consisting of numbers
+(C) No wordforms containing any numbers
+(D) No wordforms containing upper-case letters that follow lower-case letters
+(E) Only wordforms where the TreeTagger assigned a lemma
+(F) Only wordforms that are themselves (or the associated lemma) on a basic lemma list of New High German standard language [@stadler2014]
+
+Cleaning stages A through D are cumulative, e.g. cleaning stage D incorporates stages B and C. Stages E and F, however, both rely on stage D. Here, we only show how to create cleaning stage B based on the original dataset (A) because this already demonstrates the logic behind the process. Cleaning the dataset can be understood as an extension of [searching for specific patterns](#searching), because we first identify relevant codes that we want to exclude and then exclude these codes from the frequency dataset by subsetting. We are demonstrating this using fold 14.
+
+### Step 1: Identify relevant codes
+
+For stage B, we exclude punctuation^[Note that we also provided datasets without any punctuation at all. Punctuation was deleted _before_ extracting bi- and trigrams. Hence, the original corpus sequence _ich glaube , dass_ (Engl. "I believe that") is contained in the trigram dataset without punctuation as _ich glaube dass_. In the dataset with punctuation, the sequence is contained as _ich glaube ,_ and _glaube , dass_.], names, and start-end-symbols by their respective part-of-speech tags. URLs and wordforms only consisting of numbers are excluded based on regular expression queries on the token (= wordform) dictionary.
+
+```{r clean-stageB, cache = T}
+library(data.table)
+
+# Loading token dictionary for fold 14
+token_dict14 <- fread("token_keys.14.tsv",
+                      sep = "\t", header = F,
+                      quote = "", na.strings = "")
+setnames(token_dict14, c("token_clear", "token_code"))
+
+# Finding codes for URLs
+url_toks <- token_dict14[grepl("^http[s]?://", token_dict14$token_clear),]$token_code
+# Finding codes for wordforms consisting of numbers only
+num_toks <- token_dict14[grepl("^[[:digit:]]+$", token_dict14$token_clear),]$token_code
+```
+
+### Step 2: Excluding codes and relevant POS tags
+
+Now that we have the relevant codes saved in `url_toks` and `num_toks` we can exclude them from the uncleaned fold 14. But first, we are excluding punctuation, names, and the start-end-symbols on the basis of their POS tags. All of this takes a while, even for one fold only.
+
+```{r clean-stageB-excl, cache = T}
+# Loading fold 14
+f14 <- fread("1-gram-token-lemma-pos-freqs-with-punctuation.14.tsv",
+             sep = "\t", header = F,
+             quote = "", na.strings = "",
+             colClasses = c("numeric", "numeric", "character", "numeric"))
+setnames(f14, c("form", "lemma", "pos", "freq"))
+
+# Excluding punctuation, names, and start-end-symbols
+f14_B <- f14[!(f14$pos %in%
+                 c("«STARTEND»",
+                   "$,", "$.", "$(",
+                   "NE")),]
+
+# Excluding URLs and wordforms consisting of numbers only
+f14_B <- f14_B[!(f14_B$form %in% c(url_toks, num_toks)),]
+scales::comma(nrow(f14) - nrow(f14_B))
+```
+
+As you can see, approx. 2.4 million entries from fold 14 are excluded in this cleaning stage. You could now do further cleaning based on `f14_B` to replicate the cumulative cleaning process. Or you could employ different cleanings by using other regular expression and/or POS queries.
+
+## Bigram data
+
+Basically, everything shown above for unigram datasets can be extended to bigram and trigram datasets. Just keep in mind that for each _n_ in _n_-gram, three additional columns are added to the datasets (one for wordform codes, one for lemma codes and one with POS tags). Hence, the column specification for bigrams is: 1: `Wordform code 1` $\rightarrow$ 2: `Lemma code 1` $\rightarrow$ 3: `POS tag 1` $\rightarrow$ 4: `Wordform code 2` $\rightarrow$ 5: `Lemma code 2` $\rightarrow$ 6: `POS tag 2` $\rightarrow$ 7: `Frequency`
+
+### 'Decrypting' bigram data
+
+```{r delete-unused5, include = FALSE}
+rm(list=ls())
+invisible(gc())
+```
+
+The dictionaries we use to back-translate the integer codes remain the same. If we want to back-translate both wordforms and lemmas, we have to deal with _four_ columns now (as opposed to two columns in the unigram case). We are demonstrating this with the bigram dataset for fold 12.
+
+Bigram datasets are quite large compared to unigram datasets (e.g., the uncompressed filesize of the unigram dataset for fold 12 is approx. 350 MB while the bigram filesize is 7.6 GB). This is not only due to the increased number of _columns_ but, of course, the bigram files contain more _rows_ because every single bigram of the corpus fold has to be recorded. This will quickly bring personal computers with 16 or even 32 GB of working memory to their limits. That is why we are limiting the number of rows that are being read to 50 million here. To read the complete file, simply delete the `nrow` parameter in the next call. If you plan to do so, we recommend using a machine with more than 32 GB of RAM.
+
+```{r read-bigram, cache = F}
+library(data.table)
+# Read fold 12
+bg12 <- fread("2-gram-token-lemma-pos-freqs-with-punctuation.12.tsv",
+              sep = "\t", header = F,
+              quote = "", na.strings = "",
+              colClasses = c(rep(c("numeric", "numeric", "character"), 2), "numeric"),
+              nrow = 5e+07) # <-- Delete this if you want to read the complete file
+setnames(bg12, c("form1", "lemma1", "pos1", "form2", "lemma2", "pos2", "freq"))
+# Loading lemma keys for fold 12
+lemma_dict12 <- fread("lemma_keys.12.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(lemma_dict12, c("lemma_clear", "lemma_code"))
+
+# Loading token keys for fold 12
+token_dict12 <- fread("token_keys.12.tsv",
+                    sep = "\t", header = F,
+                    quote = "", na.strings = "")
+setnames(token_dict12, c("token_clear", "token_code"))
+```
+
+Now we are all set: we've read the bigram dataset, the lemma dictionary, and the token dictionary. When merging, we take one extra step because we want to name the new columns corresponding to the first and second element. We are doing this after each call to `merge()`. You see this in the code below. The first renaming operation is indicated by a comment.
+
+```{r bigram-merge, cache = T}
+# Merge lemma of first element
+bg12 <- merge(bg12, lemma_dict12, by.x = "lemma1", by.y = "lemma_code")
+names(bg12)[names(bg12) == "lemma_clear"] <- "lemma_clear1" # <-- Renaming the new column in the dataset
+# Merge lemma of second element
+bg12 <- merge(bg12, lemma_dict12, by.x = "lemma2", by.y = "lemma_code")
+names(bg12)[names(bg12) == "lemma_clear"] <- "lemma_clear2"
+# Merge wordform of first element
+bg12 <- merge(bg12, token_dict12, by.x = "form1", by.y = "token_code")
+names(bg12)[names(bg12) == "token_clear"] <- "token_clear1"
+# Merge wordform of second element
+bg12 <- merge(bg12, token_dict12, by.x = "form2", by.y = "token_code")
+names(bg12)[names(bg12) == "token_clear"] <- "token_clear2"
+```
+Now that we have merged all the relevant information, we want to know which bigrams are the most frequent ones. Here, we would like to exclude all bigrams involving start/end symbols or punctuation marks.
+
+```{r show-bigrams, cache = T}
+setorder(bg12, -freq)
+bg12_result <- bg12[!(bg12$pos1 %in% c("«STARTEND»", "$.", "$(", "$,")) &
+            !(bg12$pos2 %in% c("«STARTEND»", "$.", "$(", "$,")),]
+head(bg12_result, 10)
+```
+
+Again, let us see how wordforms map to lemmas. We are searching for all combinations of
+
+* the first wordform being _vielen_ (Engl. "many", dative/accusative/genitive case) or _manchen_ (Engl. "some", dative/accusative/genitive case)
+* the second wordform being _Frauen_ (Engl. "women") or _Kindern_ (Engl. "children", dative/accusative/genitive case)
+
+```{r bigram-form-to-lemma, cache = T}
+bg12_result[bg12_result$token_clear1 %in% c("vielen", "manchen") &
+              bg12_result$token_clear2 %in% c("Frauen", "Kindern"),]
+```
+Or, the other way around, which wordforms are associated with certain lemmas? We are searching for all combinations of
+
+* the first lemma being the determiner _die_ (Engl. "the")
+* the second lemma being _Ärztin_ (Engl. "doctor", female form)
+
+```{r bigram-lemma-to-form, cache = T}
+bg12_result[bg12_result$lemma_clear1 == "die" &
+              bg12_result$lemma_clear2 == "Ärztin",]
+```
+
+#### References
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>
