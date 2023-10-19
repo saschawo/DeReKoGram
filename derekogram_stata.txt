@@ -1,0 +1,738 @@
+<<dd_version: 2>>
+
+Introducing DeReKoGram
+======================
+
+Alexander Koplenig
+
+contact: <koplenig@ids-mannheim.de>
+
+2023-03-06
+
+---
+# Table of Contents
+
+[What is this document?](#what-is-this-document)
+
+[How to use?](#how-to-use)
+
+[A note on START/END markers](#a-note-on-startend-markers)
+
+['Decrypting' integer codes](#decrypting-integer-codes)
+
+[Aggregating datasets](#aggregating-datasets)
+
+[Lowering datasets](#lowering-datasets)
+
+[Searching for patterns](#searching-for-patterns)  
+
+[Cleaning](#cleaning)
+
+[Bigram data](#bigram-data)
+
+[References](#references)
+---
+
+## What is this document?
+
+This document accompanies a short paper [[1](#1-wolfer-sascha-koplenig-alexander-kupietz-marc-müller-spitzer-carolin-submitted-introducing-derekogram)] in the International Journal of Corpus Linguistics. With this document, we want to demonstrate some basic use cases for the 1- to 3-gram frequency lists provided in the repository of the Leibniz Institute for the German Language (IDS) and make it easier for other researchers to work with the data. 
+In this document we are providing **Stata** code (```version 17```) to work with the frequency lists.
+
+## How to use?
+
+* First, you need to download the dataset(s) you want to work with in the 
+[IDS repository](https://hdl.handle.net/10932/00-057D-0921-30F0-F201-D)
+. The naming convention of the datasets is as follows: ```[1/2/3]-gram-token-lemma-pos-freqs-[with/without]-punctuation.<fold number with leading zero>.tsv.```
+* Then unzip the dataset(s) with ```unxz``` on Linux or macOS. On Windows, you can use 
+[7-Zip](https://www.7-zip.org/download.html) 
+to decompress xz files.
+
+We will demonstrate most of the operations documented here with only a subset of the 16 folds contained in the original data. Please refer to the accompanying publication (Section ‘Evaluation of fold distribution’) to see why, in many cases, it should not make a huge difference whether you use a subset of folds or all folds.
+
+All following sections are ‘self-contained’ in the sense that no code in these sections relies on code in previous sections (e.g. loading of data).
+
+## A note on START/END markers
+
+You might want to remove all rows in the dataset that consist of start or end markers only. You can do this by excluding rows that only contain the integer codes ```-1``` or ```-2``` in the wordform and lemma column(s).
+
+We’ve included these “markers-only rows” for consistency checks, for example to check whether the frequencies (in the bigram case) for ```«START» «START»``` and ```«START» <other>``` match. In the unigram datasets, the number of markers can also be used to find out the number of documents that went into a corpus fold because each ```«START»``` marks the beginning of a document and each ```«END»``` the end of a document For simple frequency tables, the “markers-only rows” are not necessary and might even distort some measures like normed/relative frequencies.
+
+However, there are situations where keeping such rows can be important. For example, when we train language models (see the ```Python code``` for an example): if we want to compute  $P_{ml} =\frac{c(v,w)}{c(v)}$ based on the ```2-gram data```, we can use the ```1-gram data``` to get the information for the denominator $c(v)$. If we exclude the markers-only rows from the ```1-gram data```, this would lead to a denominator of 0 for v equal to ```«START»``` and thus an undefined value.
+
+## ‘Decrypting’ integer codes
+
+Wordforms and lemmas in DeReKoGram are integer-coded  [[2](#2-brants-thorsten-popat-ashok-c-xu-peng-och-franz-j-dean-jeffrey-2007-large-language-models-in-machine-translation-in-proceedings-of-the-2007-joint-conference-on-empirical-methods-in-natural-language-processing-and-computational-natural-language-learning-emnlp-conll-858867-prague-czech-republic-association-for-computational-linguistics-retrieved-from-httpsaclanthologyorgd07-1090)]. The information for back-translating or ‘decrypting’ the integer codes is saved in the ```[lemma/token]_keys.<fold number with leading zero>.tsv.xz``` dictionary files. The files without fold number are the overall dictionaries for the complete dataset. Integer codes are consistent over the single-fold dictionaries and the overall dictionary.
+
+If you want to translate integer codes into original lemmas or wordforms, you can simply merge one column of the dictionary into the frequency dataset. 
+
+As we wrote in the article, the columns in the unigram datasets are sorted as follows
+1: ```Wordform code``` TAB 2: ```Lemma code``` TAB 3: ```POS tag``` TAB 4: ```Frequency```
+
+The first three columns are repeated for bigrams. In this case, the first three columns are repeated for the second element of the bigram, like so:
+1: ```Wordform code 1``` TAB 2: ```Lemma code 1``` TAB 3: ```POS tag 1``` TAB 4: ```Wordform code 2``` TAB 5: ```Lemma code 2``` TAB 6: ```POS tag 2``` TAB 7: ```Frequency```
+
+For trigrams, this works accordingly. Consequently, trigram datasets have ```3 * 3 + 1 = 10 columns```.
+
+~~~~
+<<dd_do>>
+*Create frames
+*[NB: 	'frames' only work since version 16
+*		if you want to work without 'frames', just import the data and save each file to disk
+*		then you can use 'merge' instead of 'frlink' to merge the data sets]
+frames reset
+frame create f1 
+frame create lemma_dict1
+frame create token_dict1
+
+*Loading fold 1 (with punctuation)
+frame f1 {
+	import delimited "1-gram-token-lemma-pos-freqs-with-punctuation.01.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 token_n
+	rename v2 lemma_n
+	rename v3 pos
+	rename v4 freq
+}
+
+*Loading lemma & token keys for fold 1
+foreach type in lemma token {
+	frame `type'_dict1 {
+	import delimited "`type'_keys.01.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 `type'
+	rename v2 `type'_n
+}
+}
+<</dd_do>>
+~~~~
+List the ten most frequent forms (integer code 0 -9) with corresponding lemma & wordform information
+~~~~
+<<dd_do>>
+frame change f1
+
+capture frame drop mostfrequent
+frame put if token_n >=0 & token_n <= 9, into(mostfrequent)
+
+frame change mostfrequent
+
+*Link by token_codes
+frlink m:1 token_n, frame(token_dict1)
+frget token = token, from(token_dict1)
+
+*Link by lemma codes
+frlink m:1 lemma_n, frame(lemma_dict1)
+frget lemma = lemma, from(lemma_dict1)
+
+*Sort by freq
+gsort -freq
+
+*List
+list token_n - freq lemma token in 1/10
+<</dd_do>>
+~~~~
+Let us check a few word forms where the lemma should differ from its associated wordform: 
+~~~~
+<<dd_do>>
+frame change token_dict1
+
+capture frame drop formsearch
+frame put if token == "ging" | token == "sagte" | token == "Linguistinnen" | token == "beste", into(formsearch)
+
+frame change f1
+preserve
+
+*Link with frame 'formsearch'
+frlink m:1 token_n, frame(formsearch)
+frget token, from(formsearch)
+
+keep if token != ""
+
+*Link by lemma codes
+frlink m:1 lemma_n, frame(lemma_dict1)
+frget lemma = lemma, from(lemma_dict1)
+
+*List
+list token_n lemma_n pos freq lemma token 
+restore 
+<</dd_do>>
+~~~~
+Of course, we can do this the other way around and search for all wordforms associated with a specific lemma.
+~~~~
+<<dd_do>>
+frame change lemma_dict1
+
+capture frame drop lemmasearch
+frame put if lemma == "vormachen", into(lemmasearch)
+
+frame change f1
+preserve
+
+*Link with frame 'lemmasearch'
+frlink m:1 lemma_n, frame(lemmasearch)
+frget lemma, from(lemmasearch)
+
+keep if lemma != ""
+
+*Link by token codes
+frlink m:1 token_n, frame(token_dict1)
+frget token, from(token_dict1)
+
+
+list token_n lemma_n pos freq lemma token
+restore 
+<</dd_do>>
+~~~~
+
+## Aggregating datasets
+
+For DeReKoGram, (at least) two types of aggregations might become relevant:
+
+    1. Aggregating wordform frequencies by lemma and/or POS column. This yields, for example, a dataset with POS token frequencies (one frequency value per POS tag).
+    2. Aggregating a dataset that is a combination of multiple folds (for example when compiling frequency information from four folds into one).
+
+We will go into detail below.
+
+### Aggregation by lemma and/or part-of-speech
+
+We are demonstrating this aggregation with the unigram dataset (fold 8).
+
+~~~~
+<<dd_do>>
+frame reset
+frame create f08 
+
+*Loading fold 08 (with punctuation)
+frame f08 {
+	import delimited "1-gram-token-lemma-pos-freqs-with-punctuation.08.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 token_n
+	rename v2 lemma_n
+	rename v3 pos
+	rename v4 freq
+}
+
+frame change f08
+*List
+list in 1/10
+<</dd_do>>
+~~~~
+
+How many wordforms (rows), lemmas (number of unique values in column ```lemma```) and tokens (summed column ```freq```) are there in fold 8? 
+
+~~~~
+<<dd_do>>
+preserve
+*How many wordforms 
+di %12.0fc _N
+
+*How many unique lemmas
+bysort lemma: generate unique = _n == 1
+qui count if unique == 1
+
+di %12.0fc r(N)
+
+*Total token frequency
+qui sum freq
+
+di %14.0fc r(sum)
+restore
+<</dd_do>>
+~~~~
+
+### Aggregate by lemma and sort by frequency
+
+~~~~
+<<dd_do>>
+
+preserve
+collapse (sum) freq, by(lemma_n) fast
+gsort -freq
+
+*List
+list in 1/10
+
+*How many unique values (should be same as above)
+di %12.0fc _N
+
+restore
+<</dd_do>>
+~~~~
+
+### Aggregate by lemma AND by pos
+~~~~
+<<dd_do>>
+
+
+capture frame create f08_collapsed
+frame copy f08 f08_collapsed, replace
+frame change f08_collapsed
+
+collapse (sum) freq, by(lemma_n pos) fast
+gsort -freq
+*List
+list in 1/10
+<</dd_do>>
+~~~~
+
+If you want to 'decrypt' the integer codes, load the corresponding lemma dictionary and merge it with this (or any other) dataset. 
+Here, we are using the lemma dictionary for fold 8 only because this is much faster than using the overall lemma dictionary. Note: Lemma code 3 translates to ```--``` which is the code for lemmas not recognized by the TreeTagger [[3](#3-schmid-helmut-1994-probabilistic-part-of-speech-tagging-using-decision-trees-in-international-conference-on-new-methods-in-language-processing-manchester-uk-retrieved-from-httpswwwcisuni-muenchendeschmidtoolstreetaggerdatatree-tagger1)]. Hence, in the example below, approx. 54.6 lemmas of wordforms tagged as nouns (POS tag NN) in fold 8 have not been recognized.
+
+~~~~
+<<dd_do>>
+
+*Loading lemma keys for fold 8
+
+capture	frame create lemma_dict8
+		frame lemma_dict8 {
+		import delimited "lemma_keys.08.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+		rename v1 lemma
+		rename v2 lemma_n
+	}
+	
+keep if lemma_n >= 0 & lemma_n <= 9
+*Link by lemma codes
+frlink m:1 lemma_n, frame(lemma_dict8)
+frget lemma, from(lemma_dict8)	
+	
+gsort -freq
+
+list lemma_n pos freq lemma in 1/10	
+<</dd_do>>
+~~~~
+
+### Combining and aggregating multiple folds
+
+~~~~
+<<dd_do>>
+
+*To append frame, we use Roger Newson's xframeappend ado
+*to install:ssc install xframeappend
+*Load folds
+foreach fold in 03 11 15 {
+	capture frame drop f`fold'
+	frame create f`fold'
+	frame f`fold' {
+	import delimited "1-gram-token-lemma-pos-freqs-with-punctuation.`fold'.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 token_n
+	rename v2 lemma_n
+	rename v3 pos
+	rename v4 freq
+}
+}
+
+frame change f08
+xframeappend f03 f11 f15, fast
+
+*Let's see how many rows there are for periods (end-of-sentence).
+list if token_n == 0 & lemma_n == 1 & pos == "$."
+
+*Aggregate
+collapse (sum) freq, by(token_n lemma_n pos) fast
+
+gsort -freq
+
+list in 1/10
+<</dd_do>>
+~~~~
+
+## Lowering datasets
+By "lowering" we mean transforming all wordforms to lower-case (e.g. *Der* and *dEr* are transformed to *der*). When working with DeReKoGram, we suggest a 3-step process for lowering:
+
+   1. Create a dictionary with codes for the lowered forms and lemmas ("lowered codes")
+   2. Merge the "lowered codes" to the dataset
+   3. Aggregate by the "lowered codes"
+
+
+We will demonstrate this using fold 8. We have to load the lemma and token dictionaries for fold 8. Token (or wordform) dictionaries are much larger than lemma dictionaries, especially because all unknown lemmas (integer code 3, clear form ```--```) are expanded to their original wordforms.
+~~~~
+<<dd_do>>
+frame reset
+frame create f08 
+
+*Loading fold 08 (with punctuation)
+frame f08 {
+	import delimited "1-gram-token-lemma-pos-freqs-with-punctuation.08.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 token_n
+	rename v2 lemma_n
+	rename v3 pos
+	rename v4 freq
+}
+
+*Loading lemma & token keys for fold 08
+
+
+foreach type in lemma token {
+	frame create `type'_dict08
+	frame `type'_dict08 {
+	import delimited "`type'_keys.08.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 `type'
+	rename v2 `type'_n
+}
+}	
+<</dd_do>>
+
+~~~~
+### Step 1: Create lowered codes
+
+We first create a new column ```[lemma/token]_low``` in the dictionaries which hold the lower-case version of all lemmas/wordforms. We then assign the columns ```[lemma/token]_low_n``` which hold the code with the lowest integer number for each group of lowered lemmas/wordforms. This takes a while.
+~~~~
+<<dd_do>>
+
+foreach type in lemma token {
+	frame `type'_dict08 {
+		gen `type'_low = ustrlower(`type', "de")
+		bysort `type'_low : egen long `type'_low_n = min(`type'_n)
+	}
+}
+<</dd_do>>
+
+~~~~
+We can check if that worked by looking at a few lowered lemmas that have more than one "case-sensitive version".
+~~~~
+<<dd_do>>
+
+frame lemma_dict08: list if lemma_low == "rennen" | lemma_low == "befinden" | lemma_low == "nato"
+<</dd_do>>
+
+~~~~
+As you can see, each lowered code (```lemma_low_n```) is set to the smallest ```lemma_n``` value in this group. Since integer codes are sorted by overall frequency, this already tells us that, for example, *Rennen* (noun, Engl. "run", "race") is more frequent than *rennen* (verb, Engl. "to run", "to race").
+
+We can do the same for wordforms, for example to see all the different capitalization versions of *rennen* and *befinden*.
+~~~~
+<<dd_do>>
+
+frame token_dict08: list if token_low == "rennen" | token_low == "befinden" 
+
+<</dd_do>>
+
+~~~~
+### Step 2: Merge lowered codes to dataset
+
+We are now merging fold 8 and the lowered dictionaries because we want each original lemma/wordform code to be associated with its respective lowered code.
+
+~~~~
+
+<<dd_do>>
+frame copy f08 f08_with_lower, replace
+
+frame change f08_with_lower
+
+*Link by token_codes
+frlink m:1 token_n, frame(token_dict08)
+frget token*, from(token_dict08)
+
+*Link by lemma codes
+frlink m:1 lemma_n, frame(lemma_dict08)
+frget lemma*, from(lemma_dict08)
+
+<</dd_do>>
+
+~~~~
+### Step 3: Aggregate by lowered codes
+
+There are multiple rows in the dataset for each value in ```token_low_n``` now. Let’s see how this looks like for all lowered occurrences of *befinden* (Engl. as reflexive verb: "to be located" (as verb); as noun: "condition", "opinion"). We find the respective lowered code in the prepared frame above, it is ```2273```.
+~~~~
+<<dd_do>>
+list token_n - freq token_low token_low_n lemma lemma_low lemma_low_n if token_low_n == 2273
+
+<</dd_do>>
+
+~~~~
+There are 9 rows for the lowered wordform *befinden*, all with different case-sensitive wordforms, lemmas, or parts-of-speech. To get a lowered dataset that still holds lemma and POS information, we can aggregate by the columns ```token_low_n```, ```lemma_low_n```, and ```pos```.
+~~~~
+
+<<dd_do>>
+frame copy f08_with_lower f08_with_lower_agg, replace
+
+frame change f08_with_lower_agg
+local unique_original = _N
+collapse (sum) freq, by(pos token_low token_low_n lemma_low lemma_low_n) fast
+
+local unique_lowered = _N
+di %12.0fc `unique_original' - `unique_lowered'
+
+
+*List
+list if token_low_n == 2273
+
+<</dd_do>>
+
+~~~~
+
+## Searching for patterns
+
+Sometimes, we want to select all hits for a specific pattern from a frequency dataset like DeReKoGram. The frequency data is integer-coded, though. So, we need to perform two steps to extract the frequency data for specific patterns:
+
+   1. Search for the pattern in the respective dictionary. Use the appropriate dictionary (lemma or token/wordform) dependent on whether you want to search for lemmas or wordforms. Save the codes in a variable.
+   2. Extract all these codes from the frequency dataset (+ 'decrypt' the integer codes).
+
+DeReKoGram has already been used in such a way by Wolfer & Hein [[4](#4-wolfer-sascha-hein-katrin-2022-konsequenzen-der-los-suffigierung-im-deutschen-korpushäufigkeit-emotional-affektive-effekte-und-konstruktionsgrammatische-perspektiven-zeitschrift-für-wortbildung-journal-of-word-formation-62-7199-doi-httpsdoiorg103726zwjw20220203)] who extracted all privative adjectives from DeReKoGram that ended in -los (Engl. "-less"). Here, we are demonstrating this using the unigram data of fold 8. We are searching on the lemma level. 
+If you want to search in the complete dataset, you can either iterate over all the folds (might take longer but needs less memory) or first [aggregate](#aggregating-datasets) all the folds into one and use the overall lemma or token dictionaries we are also providing for searching (this second option might be faster but needs significantly more memory).
+~~~~
+<<dd_do>>
+frame reset
+frame create f08 
+
+*Loading fold 08 (with punctuation)
+frame f08 {
+	import delimited "1-gram-token-lemma-pos-freqs-with-punctuation.08.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 token_n
+	rename v2 lemma_n
+	rename v3 pos
+	rename v4 freq
+}
+
+*Loading lemma keys for fold 08
+
+frame create lemma_dict08
+frame lemma_dict08 {
+	import delimited "lemma_keys.08.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 lemma
+	rename v2 lemma_n
+}
+
+frame change lemma_dict08
+
+capture frame drop ung
+
+*More info on Regular Expressions in Stata: https://www.stata.com/support/faqs/data-management/regular-expressions/
+frame put if regexm(lemma, "[A-z]+[a-z]+ung$"), into(ung)
+
+frame change ung
+list lemma in 1/10
+<</dd_do>>
+
+~~~~
+
+### Step 2: Extract results from frequency data
+
+Since we already restricted our results to lemmas with an initial upper-case letter, we might not need to restrict our results to nouns. But there’s no harm in doing so. So let’s extract all nouns that have a lemma code contained in the our dictionary result list. We then aggregate the dataset by lemma because, here, we are not interested in specific inflected forms of the lemma. We also [decrypt](#decrypting-integer-codes) our results by merging it with the lemma dictionary.
+~~~~
+<<dd_do>>
+frame change f08
+
+capture frame drop ung_freq
+
+frame put if pos == "NN", into(ung_freq)
+
+frame change ung_freq
+
+*Link by lemma codes
+frlink m:1 lemma_n, frame(ung)
+frget lemma = lemma, from(ung)
+
+keep if lemma != ""
+
+*Aggregate
+collapse (sum) freq, by(lemma_n lemma) 
+gsort -freq
+
+*List
+list in 1/10
+<</dd_do>>
+
+~~~~
+
+## Cleaning
+In Wolfer et al. [[1](#1-wolfer-sascha-koplenig-alexander-kupietz-marc-müller-spitzer-carolin-submitted-introducing-derekogram)], we show how different cleaning 'stages' of the dataset influence vocabulary growth when taking more and more corpus folds into consideration. Here, we want to demonstrate how this cleaning can be achieved. The cleaning stages reported in the paper are as follows: 
+
+ 		A. No cleaning.
+ 		
+ 		B. No punctuation, names, start-end-symbols, URLs, wordforms only consisting of numbers
+ 		
+ 		C. No wordforms containing any numbers
+ 		
+ 		D. No wordforms containing upper-case letters that follow lower-case letters
+ 		
+ 		E. Only wordforms where the TreeTagger assigned a lemma
+ 		
+ 		F. Only wordforms that are themselves (or the associated lemma) on a basic lemma list of New High German standard language [5]
+
+Cleaning stages A through D are cumulative, e.g. cleaning stage D incorporates stages B and C. Stages E and F, however, both rely on stage D. Here, we only show how to create cleaning stage B based on the original dataset (A) because this already demonstrates the logic behind the process. Cleaning the dataset can be understood as an extension of [searching for specific patterns](#searching-for-patterns), because we first identify relevant codes that we want to exclude and then exclude these codes from the frequency dataset by subsetting. We are demonstrating this using fold 14.
+
+
+### Step 1: Identify relevant codes
+
+For stage B, we exclude punctuation¹, names, and start-end-symbols by their respective part-of-speech tags. URLs and wordforms only consisting of numbers are excluded based on regular expression queries on the token (= wordform) dictionary.
+
+[¹Note that we also provided datasets without any punctuation at all. Punctuation was deleted before extracting bi- and trigrams. Hence, the original corpus sequence *ich glaube , dass* (Engl. "I believe that") is contained in the trigram dataset without punctuation as *ich glaube dass*. In the dataset with punctuation, the sequence is contained as *ich glaube ,* and *glaube , dass.*]
+
+~~~~
+<<dd_do>>
+frame reset
+frame create f14 
+
+*Loading fold 14 (with punctuation)
+frame f14 {
+	import delimited "1-gram-token-lemma-pos-freqs-with-punctuation.14.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 token_n
+	rename v2 lemma_n
+	rename v3 pos
+	rename v4 freq
+}
+
+*Loading token keys for fold 14
+
+frame create token_dict14
+frame token_dict14 {
+	import delimited "token_keys.14.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 token
+	rename v2 token_n
+}
+
+frame change token_dict14
+
+* Finding codes for URLs
+capture frame drop url_toks
+frame put if regexm(token, "^http[s]?://"), into(url_toks)
+
+* Finding codes for wordforms consisting of numbers only
+capture frame drop num_toks
+frame put if regexm(token, "^[0-9]*$"), into(num_toks)
+<</dd_do>>
+
+~~~~
+### Step 2: Excluding codes and relevant POS tags
+
+Now that we have the relevant codes saved in ```url_toks``` and ```num_toks``` we can exclude them from the uncleaned fold 14. But first, we are excluding punctuation, names, and the start-end-symbols on the basis of their POS tags. All of this takes a while, even for one fold only.
+~~~~
+<<dd_do>>
+* Load fold 14
+frame change f14
+
+* Excluding punctuation, names, and start-end-symbols
+capture frame drop f14_without
+frame put if pos != "«STARTEND»" & pos != "$," & pos != "$." & pos != "$(" & pos != "NE", into(f14_without)
+
+frame change f14_without
+
+*Excluding URLs and wordforms consisting of numbers only
+
+*Link with url_toks
+frlink m:1 token_n, frame(url_toks)
+*Drop if not empty
+drop if url_toks != .
+
+*Link with num_toks
+frlink m:1 token_n, frame(num_toks)
+*Drop if not empty
+drop if num_toks != .
+
+local cleaned = _N
+
+*How many are dropped during cleaning
+frame change f14
+
+di %12.0fc _N - `cleaned'
+<</dd_do>>
+
+~~~~
+
+As you can see, approx. 2.4 million entries from fold 14 are excluded in this cleaning stage. You could now do further cleaning based to replicate the cumulative cleaning process. Or you could employ different cleanings by using other regular expression and/or POS queries.
+
+
+## Bigram data
+
+Basically, everything shown above for unigram datasets can be extended to bigram and trigram datasets. Just keep in mind that for each *n* in *n*-gram, three additional columns are added to the datasets (one for wordform codes, one for lemma codes and one with POS tags).
+
+### 'Decrypting' bigram data
+
+The dictionaries we use to back-translate the integer codes remain the same. If we want to back-translate both wordforms and lemmas, we have to deal with four columns now (as opposed to two columns in the unigram case). We are demonstrating this with the bigram dataset for fold 12.
+
+Bigram datasets are quite large compared to unigram datasets (e.g., the uncompressed filesize of the unigram dataset for fold 12 is approx. 350 MB while the bigram filesize is 7.6 GB). This is not only due to the increased number of columns but, of course, the bigram files contain more rows because every single bigram of the corpus fold has to be recorded. This will quickly bring personal computers with 16 or even 32 GB of working memory to their limits. That is why we are limiting the number of rows that are being read to 50 million here. To read the complete file, simply delete the ```rowrange``` parameter in the next call. If you plan to do so, we recommend using a machine with more than 32 GB of RAM.
+
+~~~~
+<<dd_do>>
+import delimited "2-gram-token-lemma-pos-freqs-with-punctuation.12.tsv", clear rowrange(:50000000)  /// <-- delete rowrange(:50000000) if you want to read the complete file
+
+rename v1 token1_n
+rename v2 lemma1_n
+rename v3 pos1
+
+rename v4 token2_n
+rename v5 lemma2_n
+rename v6 pos2
+
+rename v7 freq
+
+save 2gram_fold12, replace
+
+frame reset
+frame create f12 
+frame f12: use 2gram_fold12
+
+*Loading lemma & token keys for fold 12
+foreach type in lemma token {
+	frame create `type'_dict12
+	frame `type'_dict12 {
+	import delimited "`type'_keys.12.tsv", bindquote(nobind) stripquote(no) asdouble encoding(UTF-8) clear
+	rename v1 `type'
+	rename v2 `type'_n
+}
+}
+<</dd_do>>
+
+~~~~
+Now we are all set: we’ve read the bigram dataset, the lemma dictionary, and the token dictionary. We now simply link lemmas and tokens via the ```token_[1/2]_n``` column.
+~~~~
+
+<<dd_do>>
+frame change f12
+
+	forvalues i = 1/2 {
+		foreach type in lemma token {
+			gen `type'_n = `type'`i'_n	
+			*Link
+			frlink m:1 `type'_n, frame(`type'_dict12)
+			frget `type'`i' = `type', from(`type'_dict12)
+			capture drop `type'_n `type'_dict12
+	}
+	}
+
+gsort -freq
+<</dd_do>>
+
+~~~~
+Now that we have merged all the relevant information, we want to know which bigrams are the most frequent ones. Here, we would like to exclude all bigrams involving start/end symbols or punctuation marks.
+~~~~
+
+<<dd_do>>
+list token1 lemma1 pos1 token2 lemma2 pos2 freq if (pos1 != "«STARTEND»" & pos1 != "$." & pos1 != "$(" & pos1 != "$,") & (pos2 != "«STARTEND»" & pos2 != "$." & pos2 != "$(" & pos2 != "$,") in 1/30
+<</dd_do>>
+
+~~~~
+Again, let us see how wordforms map to lemmas. We are searching for all combinations of
+
+* the first wordform being *vielen* (Engl. "many", dative/accusative/genitive case) or *manchen* (Engl. "some", dative/accusative/genitive case)
+ 	
+* the second wordform being *Frauen* (Engl. "women") or *Kindern* (Engl. "children", dative/accusative/genitive case)
+~~~~
+
+<<dd_do>>
+list token1 lemma1 pos1 token2 lemma2 pos2 freq if (token1 == "vielen" |token1 == "manchen") & (token2 == "Frauen" | token2 == "Kindern")
+<</dd_do>>
+
+~~~~
+Or, the other way around, which wordforms are associated with certain lemmas? We are searching for all combinations of
+
+* the first lemma being the determiner die (Engl. "the")
+ 	
+* the second lemma being Ärztin (Engl. "doctor”, female form)
+
+~~~~
+
+<<dd_do>>
+list token1 lemma1 pos1 token2 lemma2 pos2 freq if lemma1 == "die" & lemma2 == "Ärztin"
+<</dd_do>>
+
+~~~~
+
+## References
+#####[1] Wolfer, Sascha, Koplenig, Alexander, Kupietz, Marc & Müller-Spitzer, Carolin. submitted. Introducing DeReKoGram.
+
+#####[2] Brants, Thorsten & Popat, Ashok C. & Xu, Peng & Och, Franz J. & Dean, Jeffrey. 2007. Large language models in machine translation. In Proceedings of the 2007 joint conference on empirical methods in natural language processing and computational natural language learning (EMNLP-CoNLL), 858–867. Prague, Czech Republic: Association for Computational Linguistics. Retrieved from [https://aclanthology.org/D07-1090](https://aclanthology.org/D07-1090)
+
+#####[3] Schmid, Helmut. 1994. Probabilistic Part-of-Speech Tagging Using Decision Trees. In International Conference on New Methods in Language Processing,. Manchester, UK. Retrieved from [https://www.cis.uni-muenchen.de/~schmid/tools/TreeTagger/data/tree-tagger1](https://www.cis.uni-muenchen.de/~schmid/tools/TreeTagger/data/tree-tagger1.pdf)
+
+#####[4] Wolfer, Sascha & Hein, Katrin. 2022. Konsequenzen der los-Suffigierung im Deutschen: Korpushäufigkeit, emotional-affektive Effekte und konstruktionsgrammatische Perspektiven. Zeitschrift für Wortbildung / Journal of Word Formation 6(2). 71–99. DOI: [https://doi.org/10.3726/zwjw.2022.02.03](https://doi.org/10.3726/zwjw.2022.02.03)  
+
+#####[5] Stadler, Heike. 2014. Die Erstellung der Basislemmaliste der neuhochdeutschen Standardsprache aus mehrfach linguistisch annotierten Korpora. (H. Blühdorn & M. Elstermann & A. Klosa, Eds.). Mannheim: Institut für Deutsche Sprache. Retrieved from [https://nbn-resolving.org/urn:nbn:de:bsz:mh39-29999](https://nbn-resolving.org/urn:nbn:de:bsz:mh39-29999)    
+
+~~~~
